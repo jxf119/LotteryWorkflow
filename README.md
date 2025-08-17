@@ -229,9 +229,10 @@ MIT License - 详见[LICENSE](LICENSE)文件
 ## 📞 联系方式
 
 如有问题或建议，请通过以下方式联系：
-- 📧 Email: [你的邮箱]
+- 📧 Email: fgmd@qq.com
 - 💬 GitHub Issues
 
 ---
+
 
 *本项目旨在展示n8n工作流和AI技术的应用，请理性看待彩票预测结果。*
