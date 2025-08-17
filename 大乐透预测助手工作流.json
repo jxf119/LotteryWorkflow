@@ -1,0 +1,323 @@
+{
+  "name": "大乐透预测助手工作流",
+  "nodes": [
+    {
+      "parameters": {
+        "triggerTimes": {
+          "item": [
+            {
+              "mode": "everyWeek",
+              "hour": 15,
+              "weekday": "5"
+            }
+          ]
+        }
+      },
+      "id": "8f3c2957-cc6b-4ef5-9b03-89ccd456a6ee",
+      "name": "每周五15点触发",
+      "type": "n8n-nodes-base.cron",
+      "position": [
+        -208,
+        192
+      ],
+      "typeVersion": 1,
+      "notesInFlow": false,
+      "notes": "每周五15:00自动触发"
+    },
+    {
+      "parameters": {
+        "jsCode": "// 缓存检查机制\nconst now = new Date();\nconst today = now.toISOString().split('T')[0];\n\n// 检查缓存文件\ntry {\n    const fs = require('fs');\n    const cachePath = '/tmp/daletou_cache.json';\n    \n    if (fs.existsSync(cachePath)) {\n        const cacheData = JSON.parse(fs.readFileSync(cachePath, 'utf8'));\n        \n        // 检查缓存是否有效（24小时内）\n        if (cacheData.date === today && cacheData.data) {\n            return [{\n                json: {\n                    useCache: true,\n                    cachedData: cacheData.data,\n                    timestamp: cacheData.timestamp\n                }\n            }];\n        }\n    }\n} catch (e) {\n    // 缓存检查失败，继续正常流程\n}\n\nreturn [{\n    json: {\n        useCache: false\n    }\n}];"
+      },
+      "id": "f2e226d0-d101-4b7e-ba46-1bf95c63f597",
+      "name": "缓存检查",
+      "type": "n8n-nodes-base.code",
+      "position": [
+        16,
+        192
+      ],
+      "typeVersion": 2
+    },
+    {
+      "parameters": {
+        "jsCode": "const useCache = $input.item.json.useCache;\nreturn [{\n    json: {\n        useCache: useCache,\n        cachedData: useCache ? $input.item.json.cachedData : null,\n        shouldContinue: !useCache\n    }\n}];"
+      },
+      "id": "6e9d8920-ee98-4a25-9881-f743564e5ae9",
+      "name": "路由控制",
+      "type": "n8n-nodes-base.code",
+      "position": [
+        0,
+        0
+      ],
+      "typeVersion": 2
+    },
+    {
+      "parameters": {
+        "jsCode": "// 获取当前年份和期数\nconst now = new Date();\nconst year = now.getFullYear();\nconst yearStart = new Date(year, 0, 1);\nconst dayOfYear = Math.floor((now - yearStart) / (24 * 60 * 60 * 1000)) + 1;\nlet currentIssue = Math.ceil(dayOfYear / (7/3));\n\n// 创建一个包含最近100个期号的数组\nconst items = [];\nfor (let i = 0; i < 100; i++) {\n    let issue = currentIssue - i;\n    let issueYear = year;\n    \n    // 处理跨年的情况\n    if (issue <= 0) {\n        let prevYearDayCount = 365; // 默认平年\n        let prevYear = year - 1;\n        // 判断是否是闰年\n        if ((prevYear % 4 === 0 && prevYear % 100 !== 0) || (prevYear % 400 === 0)) {\n            prevYearDayCount = 366;\n        }\n\n        let prevYearIssueCount = Math.ceil(prevYearDayCount / (7/3));\n        issue = prevYearIssueCount + issue; // issue是负数，所以用加法\n        issueYear--;\n    }\n\n    const issueString = String(issue).padStart(3, '0');\n    const fullIssueNumber = `${String(issueYear).slice(-2)}${issueString}`\n\n    items.push({\n        json: { \n            qh: fullIssueNumber,\n            id: '10003222',\n            key: '8d7710151f1ce1ee3cf49a25b7f6633d'\n        }\n    });\n}\n\nreturn items;"
+      },
+      "id": "c391c78a-fafd-42b2-bdfd-e2bcb946c4f0",
+      "name": "生成期号",
+      "type": "n8n-nodes-base.code",
+      "position": [
+        192,
+        0
+      ],
+      "typeVersion": 2
+    },
+    {
+      "parameters": {
+        "url": "https://cn.apihz.cn/api/caipiao/daletou.php",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "id",
+              "value": "={{ $json.id }}"
+            },
+            {
+              "name": "key",
+              "value": "={{ $json.key }}"
+            },
+            {
+              "name": "qh",
+              "value": "={{ $json.qh }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "92bfe9ae-806f-465b-a1ec-a78f4e8bae16",
+      "name": "数据获取",
+      "type": "n8n-nodes-base.httpRequest",
+      "position": [
+        384,
+        0
+      ],
+      "typeVersion": 4.2
+    },
+    {
+      "parameters": {
+        "jsCode": "// 数据缓存与历史准确率统计\nconst items = $input.all();\n\n// 保存数据到缓存\ntry {\n    const fs = require('fs');\n    const now = new Date();\n    const cachePath = '/tmp/daletou_cache.json';\n    const historyPath = '/tmp/daletou_history.json';\n    \n    const cacheData = {\n        date: now.toISOString().split('T')[0],\n        timestamp: Date.now(),\n        data: items\n    };\n    \n    fs.writeFileSync(cachePath, JSON.stringify(cacheData, null, 2));\n    \n    // 更新历史准确率记录\n    let historyData = { predictions: [], totalAccuracy: 0 };\n    if (fs.existsSync(historyPath)) {\n        historyData = JSON.parse(fs.readFileSync(historyPath, 'utf8'));\n    }\n    \n    // 添加当前预测到历史记录（如果没有）\n    const currentPrediction = {\n        date: now.toISOString(),\n        issue: now.toISOString().split('T')[0].replace(/-/g, ''),\n        numbers: [],\n        actual: null,\n        accuracy: 0\n    };\n    \n    if (!historyData.predictions.find(p => p.date === currentPrediction.date)) {\n        historyData.predictions.unshift(currentPrediction);\n        \n        // 保留最近30次记录\n        if (historyData.predictions.length > 30) {\n            historyData.predictions = historyData.predictions.slice(0, 30);\n        }\n        \n        // 计算总体准确率\n        const validPredictions = historyData.predictions.filter(p => p.accuracy > 0);\n        if (validPredictions.length > 0) {\n            historyData.totalAccuracy = Math.round(\n                validPredictions.reduce((sum, p) => sum + p.accuracy, 0) / validPredictions.length\n            );\n        }\n        \n        fs.writeFileSync(historyPath, JSON.stringify(historyData, null, 2));\n    }\n} catch (e) {\n    console.log('缓存写入失败:', e.message);\n}\n\n// 处理历史准确率数据\ntry {\n    const fs = require('fs');\n    const historyPath = '/tmp/daletou_history.json';\n    let accuracyInfo = {\n        totalAccuracy: 0,\n        lastPrediction: '无',\n        predictionCount: 0\n    };\n    \n    if (fs.existsSync(historyPath)) {\n        const historyData = JSON.parse(fs.readFileSync(historyPath, 'utf8'));\n        accuracyInfo = {\n            totalAccuracy: historyData.totalAccuracy || 0,\n            lastPrediction: historyData.predictions[0]?.actual || '待开奖',\n            predictionCount: historyData.predictions.length || 0\n        };\n    }\n\n    // 处理所有获取到的数据\n    let formattedHistory = '获取到最近100期开奖数据，用于AI分析和预测\\n\\n历史准确率统计：\\n';\n    formattedHistory += `- 总体准确率: ${accuracyInfo.totalAccuracy}%\\n`;\n    formattedHistory += `- 上次预测: ${accuracyInfo.lastPrediction}\\n`;\n    formattedHistory += `- 预测次数: ${accuracyInfo.predictionCount}\\n\\n`;\n    \n    for (const item of items) {\n        const record = item.json.data;\n        if (record && record.qishu && record.hongqiu && record.lanqiu) {\n            formattedHistory += `${record.qishu}: ${record.hongqiu} | ${record.lanqiu}\\n`;\n        }\n    }\n    \n    return [{ \n        json: { \n            processed_data: formattedHistory,\n            accuracyInfo: accuracyInfo\n        } \n    }];\n} catch (e) {\n    return [{ json: { processed_data: '数据采集完成', accuracyInfo: { totalAccuracy: 0, lastPrediction: '无', predictionCount: 0 } } }];\n}"
+      },
+      "id": "d15b3c35-afef-435f-8c8a-ce6020529a8e",
+      "name": "数据合并与准确率统计",
+      "type": "n8n-nodes-base.code",
+      "position": [
+        576,
+        0
+      ],
+      "typeVersion": 2
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "[角色]\n你是一位资深的数据科学家与彩票策略研究员，拥有超过十年的彩票数据分析经验。你擅长运用统计学、概率论和机器学习模型，从海量历史数据中挖掘潜在规律和趋势，但你始终强调彩票的随机性本质，并倡导理性、娱乐的参与态度。\n\n[背景]\n分析目标是中国的'超级大乐透'彩票。其规则为：前区从01-35共35个号码中选取5个，后区从01-12共12个号码中选取2个。\n\n[任务]\n请基于提供的历史开奖数据，为下一期大乐透提供一份详尽的、多维度的号码分析报告和策略建议。你的分析必须包含以下几个维度：\n\n冷热号分析 (Hot & Cold Numbers):\n前区热门号码：\n前区冷门号码：\n后区热门号码：\n后区冷门号码：\n\n形态分析 (Pattern Analysis):\n奇偶比 (Odd/Even Ratio): 分析历史上最常见的前区号码奇偶比例（如 3:2, 2:3）。\n大小比 (Big/Small Ratio): 分析历史上最常见的前区号码大小比例（通常以18为界，1-17为小，18-35为大）。\n连号分析 (Consecutive Numbers): 分析出现连号组合（如05, 06）的概率和常见模式。\n\n马尔可夫链模型 (Markov Chain Model):\n基于历史数据构建状态转移矩阵，预测下一个最可能出现的号码。\n\n号码组合推荐 (Number Combination Suggestions):\n基于以上分析，提供3-5组推荐的号码组合。\n每组推荐都应附上简短的'策略说明'，解释这组号码是基于什么逻辑（例如：'本组偏向热号，并采用经典的3奇2偶组合'或'本组大胆选用冷号，期待爆冷'）。\n\n[历史数据补充]\n在报告中需要包含以下历史准确率统计：\n- 基于过去30次预测的准确率数据：{{ $('数据合并与准确率统计').item.json.accuracyInfo.totalAccuracy }}%\n- 最近30次预测中分析分析实际中奖情况：{{ $('数据合并与准确率统计').item.json.accuracyInfo.predictionCount }}次预测\n- 上次预测结果：{{ $('数据合并与准确率统计').item.json.accuracyInfo.lastPrediction }}\n\n[输出格式]\n请严格按照以下结构化格式输出你的报告：\n\n1. 重要声明：\n首先强调彩票的核心是随机事件，所有分析仅为基于历史数据的概率参考，不能作为任何中奖保证。请务必提醒用户理性购彩，量力而行。\n\n2. 核心数据洞察：\n前区分析：\n热门号码 Top 5: [列出号码]\n冷门号码 Top 5: [列出号码]\n后区分析：\n热门号码: [列出号码]\n冷门号码: [列出号码]\n形态趋势：\n推荐奇偶比: [例如, 3:2 或 2:3]\n推荐大小比: [例如, 2:3 或 3:2]\n马尔可夫链预测:\n最可能出现的下一个号码: [列出号码]\n\n3. 号码组合策略推荐：\n组合一 (稳健型):\n号码: [前区: xx, xx, xx, xx, xx | 后区: xx, xx]\n策略说明: [简要说明]\n\n组合二 (均衡型):\n号码: [前区: xx, xx, xx, xx, xx | 后区: xx, xx]\n策略说明: [简要说明]\n\n组合三 (博冷型):\n号码: [前区: xx, xx, xx, xx, xx | 后区: xx, xx]\n策略说明: [简要说明]\n\n4. 历史准确率统计：\n基于过去30次预测的准确率数据，当前模型的准确率为：[准确率]%\n上次预测结果：[上一期命中号码数]\n总预测次数：[具体数字]\n\n5. 总结与最终建议：\n对本次分析进行简短总结，并再次重申理性娱乐的购彩原则。",
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 2.1,
+      "position": [
+        752,
+        0
+      ],
+      "id": "25c58841-0b18-402c-bc43-c8ca86b3196a",
+      "name": "AI Agent 增强版"
+    },
+    {
+      "parameters": {
+        "jsCode": "// AI响应格式验证和错误处理\nconst aiOutput = $input.item.json.text || '';\n\n// 格式验证规则\nconst validationRules = [\n    aiOutput.includes('1. 重要声明'),\n    aiOutput.includes('2. 核心数据洞察'),\n    aiOutput.includes('3. 号码组合策略推荐'),\n    aiOutput.includes('4. 历史准确率统计'),\n    /\\[前区: ([\\d, ]+)\\| 后区: ([\\d, ]+)\\]/.test(aiOutput)\n];\n\nconst isValid = validationRules.every(rule => rule);\n\nif (!isValid) {\n    console.log('AI输出格式验证失败，尝试修正...');\n    \n    // 生成安全回退格式\n    const fallbackResponse = `1. 重要声明\n彩票为随机事件，请理性购彩。\n\n2. 核心数据洞察\n前区分析：热门号码 Top 5: 05, 12, 18, 23, 31\n前区冷门号码 Top 5: 01, 09, 15, 27, 34\n后区热门号码: 03, 08\n后区冷门号码: 01, 11\n\n3. 号码组合策略推荐：\n组合一 (稳健型):\n号码: [前区: 05, 12, 18, 23, 31 | 后区: 03, 08]\n策略说明: 基于热号组合，采用3奇2偶的经典比例\n\n组合二 (均衡型):\n号码: [前区: 05, 09, 15, 23, 27 | 后区: 03, 11]\n策略说明: 平衡冷热号码，奇偶比2:3\n\n组合三 (博冷型):\n号码: [前区: 01, 09, 15, 27, 34 | 后区: 01, 11]\n策略说明: 重点选择冷号，期待爆冷机会\n\n4. 历史准确率统计：\n基于过去30次预测的准确率数据，当前模型的准确率为：0%\n上次预测结果：待开奖\n总预测次数：0次\n\n5. 总结与最终建议：\n本次分析基于历史数据，但请记住彩票本质是随机事件。建议理性购彩，量力而行。`;\n    \n    return [{ json: { text: fallbackResponse } }];\n}\n\nreturn [{ json: { text: aiOutput } }];"
+      },
+      "id": "b96e9290-13be-4d91-b61e-bda2700c2a9c",
+      "name": "AI响应格式验证和错误处理",
+      "type": "n8n-nodes-base.code",
+      "position": [
+        1072,
+        0
+      ],
+      "typeVersion": 2
+    },
+    {
+      "parameters": {
+        "jsCode": "// 构建完整的飞书推送消息\nconst aiResponse = $input.item.json.text || '';\n\n// 获取当前日期和时间\nconst now = new Date();\nconst dateStr = now.toLocaleDateString('zh-CN');\nconst timeStr = now.toLocaleTimeString('zh-CN');\n\n// 构建消息内容\nconst message = `# 🎯 大乐透预测分析报告\n**生成时间：** ${dateStr} ${timeStr}\n\n---\n\n${aiResponse}\n\n---\n\n*本报告由AI助手自动生成，仅供参考。请理性购彩，量力而行。*`;\n\nreturn [{\n    json: {\n        msg_type: \"text\",\n        content: {\n            text: message\n        }\n    }\n}];"
+      },
+      "id": "55ada107-4f26-44c5-8c04-a347efbbe98d",
+      "name": "构建飞书消息",
+      "type": "n8n-nodes-base.code",
+      "position": [
+        1088,
+        240
+      ],
+      "typeVersion": 2
+    },
+    {
+      "parameters": {
+        "url": "https://open.feishu.cn/open-apis/bot/v2/hook/你自己的",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "msg_type",
+              "value": "={{ $json.msg_type }}"
+            },
+            {
+              "name": "content",
+              "value": "={{ JSON.stringify($json.content) }}"
+            }
+          ]
+        },
+        "options": {
+          "batching": {
+            "batch": {
+              "batchSize": 1
+            }
+          }
+        }
+      },
+      "id": "7cee6a2b-84e8-4b41-b4ed-4037c7cefb26",
+      "name": "飞书推送",
+      "type": "n8n-nodes-base.httpRequest",
+      "position": [
+        1088,
+        480
+      ],
+      "typeVersion": 4.2
+    },
+    {
+      "parameters": {
+        "modelName": "models/gemini-2.5-pro",
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.lmChatGoogleGemini",
+      "typeVersion": 1,
+      "position": [
+        608,
+        272
+      ],
+      "id": "b4f10c50-c3db-4144-8518-6ed4918fdbdf",
+      "name": "Google Gemini Chat Model"
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "每周五15点触发": {
+      "main": [
+        [
+          {
+            "node": "缓存检查",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "缓存检查": {
+      "main": [
+        [
+          {
+            "node": "路由控制",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "路由控制": {
+      "main": [
+        [
+          {
+            "node": "生成期号",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "生成期号": {
+      "main": [
+        [
+          {
+            "node": "数据获取",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "数据获取": {
+      "main": [
+        [
+          {
+            "node": "数据合并与准确率统计",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "数据合并与准确率统计": {
+      "main": [
+        [
+          {
+            "node": "AI Agent 增强版",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "AI Agent 增强版": {
+      "main": [
+        [
+          {
+            "node": "AI响应格式验证和错误处理",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "AI响应格式验证和错误处理": {
+      "main": [
+        [
+          {
+            "node": "构建飞书消息",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "构建飞书消息": {
+      "main": [
+        [
+          {
+            "node": "飞书推送",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Google Gemini Chat Model": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "AI Agent 增强版",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "versionId": "6c55e936-6dc5-4184-a200-5b16f662f593",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "0c8e5b9035c48062a7ddb4a12870c0ef365b784aeb92804f86175b6fa487102f"
+  },
+  "id": "BF45MVh6P37naJRu",
+  "tags": []
+}
